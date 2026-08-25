@@ -1,0 +1,52 @@
+# Fly.io deployment — single always-on machine.
+#
+# Always-on matters more than cost here: a scale-to-zero machine cold-starts for
+# 20-30s, and this link gets opened during interviews. min_machines_running = 1
+# keeps it warm.
+#
+#   fly launch --no-deploy      # first time, to claim an app name
+#   fly deploy
+
+app = "fraud-detect-console"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  MAX_CONCURRENT_SESSIONS = "6"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # SSE streams are long-lived, so each active viewer holds a request open for
+  # minutes. Sized against MAX_CONCURRENT_SESSIONS (6) plus the short polling
+  # calls the threshold slider makes, not against typical request volume.
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 20
+    hard_limit = 30
+
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "25s"
+  method = "GET"
+  path = "/api/health"
+
+[[vm]]
+  # CPU is the binding constraint here, not memory. Scoring is CPU-bound, and
+  # measured aggregate capacity is ~936 tx/s on 10 cores -- so a single shared
+  # vCPU supports only a couple of simultaneous viewers before streams visibly
+  # slow down. shared-cpu-2x roughly doubles the usable session count.
+  #
+  # Memory is comfortable: steady state is ~282 MB even at 12 sessions, now that
+  # sessions share one DataFrame instead of copying it. 1 GB is headroom, not need.
+  size = "shared-cpu-2x"
+  memory = "1gb"

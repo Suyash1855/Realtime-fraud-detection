@@ -1,15 +1,39 @@
-
 global:
   scrape_interval: 5s
+  evaluation_interval: 15s
 
 scrape_configs:
 
+  # FastAPI read API (API/main.py) — prometheus_fastapi_instrumentator
+  # exposes /metrics.
+  #
+  # Port 8200, not 8000: the demo console (app/main.py) owns 8000 and is not part
+  # of the monitored pipeline. 8100 is avoided because another local project
+  # binds it on IPv6, which makes `localhost:8100` ambiguous. Start it with:
+  #   uvicorn API.main:app --port 8200
   - job_name: "fastapi"
     static_configs:
       - targets:
-          - "host.docker.internal:8000"
+          - "host.docker.internal:8200"
+        labels:
+          service: "fraud-api"
 
+  # Kafka consumer / scorer.
+  # consumer.py serves metrics on METRICS_PORT (default 8002). This previously
+  # pointed at 8001 while the code called start_http_server(8002), so Prometheus
+  # collected nothing at all from the scorer.
+  #
+  # It must be 8002, not 8001: redis-stack publishes RedisInsight on 8001, so the
+  # consumer cannot bind there at all.
   - job_name: "fraud-consumer"
     static_configs:
       - targets:
-          - "host.docker.internal:8001"
+          - "host.docker.internal:8002"
+        labels:
+          service: "fraud-consumer"
+
+  # Prometheus scraping itself, so the monitoring stack is observable too.
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"

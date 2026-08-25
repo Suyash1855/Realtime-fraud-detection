@@ -1,0 +1,34 @@
+# Training data — 1.3 GB, never needed at serving time
+data/
+
+# MLflow local stores — the frozen bundle replaces them
+mlruns/
+mlartifacts/
+
+# Frontend deps and build output (rebuilt inside the image)
+web/node_modules/
+web/dist/
+
+# Local Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local-only stack components — not part of the deployed demo
+docker-compose.yml
+consumer.py
+producer.py
+train_fraud_model.py
+scripts/
+tests/
+API/
+
+# Docs and misc
+*.md
+*.png
+.git/
+.gitignore
+.DS_Store
+.claude/

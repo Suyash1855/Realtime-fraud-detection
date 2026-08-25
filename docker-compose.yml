@@ -1,8 +1,14 @@
-version: "3.9"
+# No `name:` here on purpose. Compose derives the project name from the directory
+# ("fraud-detect-system"), which is what the existing containers were created
+# under. Setting an explicit name would start a SECOND project and collide on the
+# container_name values.
 
 services:
 
   # ── Zookeeper ──────────────────────────────────────────────────────────────
+  # Note: Zookeeper-backed Kafka is deprecated upstream. Migrating to KRaft mode
+  # would drop this service entirely; kept here to avoid changing the broker
+  # setup you already have data in.
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -29,15 +35,64 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+
+      # Two listeners are required, because clients reach this broker by two
+      # different names. Previously there was a single advertised listener of
+      # PLAINTEXT://localhost:9092, so any client INSIDE the docker network
+      # (kafka-ui) bootstrapped fine, then received metadata telling it to
+      # connect to "localhost:9092" -- itself -- and failed.
+      #   INTERNAL: other containers      -> kafka:29092
+      #   EXTERNAL: host processes        -> localhost:9092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+      # Auto-created topics get 1 partition, which caps the consumer group at a
+      # single member forever. kafka-init below creates the topics explicitly;
+      # this default only applies to anything it misses.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_NUM_PARTITIONS: 6
+
+      # Was 1 hour, which silently deleted the stream mid-experiment.
+      KAFKA_LOG_RETENTION_HOURS: 24
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
       interval: 10s
       timeout: 10s
       retries: 10
+
+  # ── Topic creation ─────────────────────────────────────────────────────────
+  # Explicit topics with a real partition count, so `python consumer.py` can be
+  # run 6 times over and actually scale out.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    # Each command must be on ONE line. A YAML block scalar keeps backslash line
+    # continuations as literal characters, so a wrapped command reaches sh broken
+    # and its second line is parsed as a separate command.
+    #
+    # --alter follows --create because auto-creation may already have made the
+    # topic with the broker default partition count; increasing partitions on an
+    # existing topic is allowed and non-destructive (decreasing is not).
+    command: >
+      "
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions --partitions 6 --replication-factor 1;
+      kafka-topics --bootstrap-server kafka:29092 --alter --topic transactions --partitions 6 || true;
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions-dlq --partitions 1 --replication-factor 1;
+      echo '--- topics ---';
+      kafka-topics --bootstrap-server kafka:29092 --describe --topic transactions | head -1;
+      kafka-topics --bootstrap-server kafka:29092 --list
+      "
+    restart: "no"
 
   # ── Redis Stack ────────────────────────────────────────────────────────────
   redis-stack:
@@ -47,7 +102,12 @@ services:
       - "6379:6379"   # Redis
       - "8001:8001"   # Redis Insight Web UI
     environment:
-      REDIS_ARGS: "--maxmemory 256mb --maxmemory-policy allkeys-lru"
+      # volatile-lru, NOT allkeys-lru. Predictions carry a TTL; the
+      # flagged_transactions leaderboard and the stats:* counters do not.
+      # allkeys-lru was free to evict those unexpiring keys under memory
+      # pressure, which would make /stats and /frauds silently wrong.
+      # volatile-lru only ever evicts keys that have a TTL set.
+      REDIS_ARGS: "--maxmemory 256mb --maxmemory-policy volatile-lru --appendonly no"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -59,9 +119,53 @@ services:
     image: provectuslabs/kafka-ui:latest
     container_name: kafka-ui
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      # Must use the INTERNAL listener -- this runs inside the docker network.
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      DYNAMIC_CONFIG_ENABLED: "true"
+
+  # ── Prometheus ─────────────────────────────────────────────────────────────
+  # The code exposed metrics and a prometheus.yml existed, but no scraper was
+  # ever defined, so nothing was collected.
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./API/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    extra_hosts:
+      # host.docker.internal is native on Docker Desktop; this keeps the scrape
+      # targets working on plain Linux Docker too.
+      - "host.docker.internal:host-gateway"
+
+  # ── Grafana ────────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./API/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+
+volumes:
+  prometheus-data:
+  grafana-data:

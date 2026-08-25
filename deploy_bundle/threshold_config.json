@@ -1,0 +1,13 @@
+{
+  "fraud_threshold": 0.793267,
+  "high_risk_threshold": 0.917307,
+  "policy": "f1",
+  "rationale": "F1-optimal on the validation split, at training time",
+  "expected_precision": 0.6693,
+  "expected_recall": 0.5027,
+  "expected_f1": 0.5741,
+  "model_name": "fraud-xgboost",
+  "holdout_split": "chronological",
+  "test_auc": 0.8932,
+  "test_ap": 0.4972
+}

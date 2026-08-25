@@ -1,0 +1,49 @@
+# ── Data (1.3 GB of Kaggle CSVs — never commit) ──────────────────────────────
+data/
+*.csv
+
+# ── MLflow local stores ──────────────────────────────────────────────────────
+mlruns/
+mlartifacts/
+
+# ── Generated model artifacts ────────────────────────────────────────────────
+# These are outputs of train_fraud_model.py. They are the train/serve contract,
+# so if you deploy from git rather than from the registry, un-ignore them.
+artifacts/*.json
+
+# ── Plots / reports ──────────────────────────────────────────────────────────
+*.png
+!docs/*.png
+
+# ── Node / frontend build ────────────────────────────────────────────────────
+node_modules/
+web/dist/
+
+# ── Claude local machine config (absolute paths, not portable) ───────────────
+.claude/settings.local.json
+
+# ── Stray tool-call artifact ─────────────────────────────────────────────────
+LAYER_DATA*
+
+# ── Private working notes (kept local, not published) ────────────────────────
+RESUME_BRIEF.md
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# ── OS / editor ──────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ── Secrets / local overrides ────────────────────────────────────────────────
+.env
+.env.local

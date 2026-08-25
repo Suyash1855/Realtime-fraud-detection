@@ -1,0 +1,27 @@
+# Pinned to the versions verified working in this environment (Python 3.9.6).
+# Regenerate with: python -m pip freeze
+
+# ── ML / data ────────────────────────────────────────────────────────────────
+pandas==2.3.3
+numpy==2.0.2
+scikit-learn==1.6.1
+xgboost==2.1.4
+imbalanced-learn==0.12.4
+shap==0.49.1
+matplotlib==3.9.4
+
+# ── Experiment tracking ──────────────────────────────────────────────────────
+mlflow==3.1.4
+
+# ── Streaming / storage ──────────────────────────────────────────────────────
+kafka-python==3.0.1
+redis==7.0.1
+
+# ── Serving / monitoring ─────────────────────────────────────────────────────
+fastapi==0.128.8
+uvicorn[standard]>=0.30
+prometheus-client>=0.20
+prometheus-fastapi-instrumentator==7.1.0
+
+# ── Tests ────────────────────────────────────────────────────────────────────
+pytest>=8.0

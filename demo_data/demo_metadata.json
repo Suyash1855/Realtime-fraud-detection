@@ -1,0 +1,13 @@
+{
+  "rows": 12000,
+  "columns": 434,
+  "fraud_count": 393,
+  "fraud_rate": 0.0328,
+  "identity_coverage": 0.1968,
+  "transaction_dt_min": 12192900.0,
+  "transaction_dt_max": 15810833.0,
+  "fraud_amount_total": 58089.39,
+  "amount_total": 1647735.12,
+  "source": "IEEE-CIS train_transaction + train_identity",
+  "provenance": "Sampled from the chronological test period only (last 20% by TransactionDT). The model never saw these rows during training, so demo metrics are genuine out-of-sample."
+}
