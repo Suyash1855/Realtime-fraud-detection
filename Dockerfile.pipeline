@@ -1,0 +1,47 @@
+# ─── Pipeline image: producer, consumer and read API ─────────────────────────
+# One image, three entrypoints. The three processes share most of their
+# dependency set, so three separate images would be three copies of the same
+# layer stack.
+#
+# No model or encoders are baked in: consumer.py pulls both from the MLflow run
+# that produced them, so the image does not pin a model version.
+#
+# Separate from ./Dockerfile on purpose: that one builds the self-contained demo
+# console, which has no Kafka, Redis or MLflow at runtime.
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# Full mlflow rather than mlflow-skinny: consumer.py resolves the model through
+# the registry and skinny drops dependencies the xgboost flavor loads lazily.
+# scikit-learn is required at INFERENCE, not just training: without it
+# XGBClassifier loses its ClassifierMixin, and mlflow.xgboost.load_model dies on
+# `_estimator_type undefined`. shap/imbalanced-learn/matplotlib are training-only
+# and stay out. Versions match requirements.txt.
+RUN pip install --no-cache-dir \
+      "pandas==2.3.3" \
+      "numpy==2.0.2" \
+      "scikit-learn==1.6.1" \
+      "xgboost==2.1.4" \
+      "mlflow==3.1.4" \
+      "kafka-python==3.0.1" \
+      "redis==7.0.1" \
+      "fastapi==0.128.8" \
+      "uvicorn[standard]>=0.30" \
+      "prometheus-client>=0.20" \
+      "prometheus-fastapi-instrumentator==7.1.0"
+
+COPY producer.py consumer.py ./
+COPY API/ ./API/
+
+RUN useradd --create-home --shell /bin/false appuser && chown -R appuser /app
+USER appuser
+
+# Writable scratch for the contract consumer.py downloads from the model's run.
+ENV CONTRACT_CACHE_DIR=/app/contract-cache
+
+CMD ["python", "consumer.py"]

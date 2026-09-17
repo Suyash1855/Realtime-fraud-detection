@@ -16,14 +16,12 @@ __pycache__/
 venv/
 .pytest_cache/
 
-# Local-only stack components — not part of the deployed demo
+# Not copied by either image. consumer.py, producer.py and API/ are kept in the
+# context because Dockerfile.pipeline builds them.
 docker-compose.yml
-consumer.py
-producer.py
 train_fraud_model.py
 scripts/
 tests/
-API/
 
 # Docs and misc
 *.md

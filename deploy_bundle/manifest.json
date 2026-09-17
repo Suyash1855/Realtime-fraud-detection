@@ -2,7 +2,7 @@
   "model_name": "fraud-xgboost",
   "model_version": "6",
   "resolved_from": "models:/fraud-xgboost@champion",
-  "run_id": "339a285c0b28497383cfd5330d9b77b0",
+  "run_id": "40b2c72cc7e54d66b99bbe1429db235e",
   "n_features": 439,
   "split_strategy": "chronological",
   "metrics": {

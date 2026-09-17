@@ -1,0 +1,91 @@
+# Production overlay — always used together with the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# What it adds: Caddy in front of the API with automatic TLS, and log rotation
+# on every service. What it does NOT change: ports. Compose concatenates `ports`
+# across files rather than replacing them, so exposure is controlled by
+# BIND_ADDRESS / API_BIND_ADDRESS in .env, both of which must be 127.0.0.1 here.
+
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+
+  # ── TLS terminating proxy ──────────────────────────────────────────────────
+  # The only service published on a public interface. Everything it fronts is
+  # reached over the compose network, not through a host port.
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    depends_on:
+      - fraud-api
+      - grafana
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+    mem_limit: 256m
+    restart: unless-stopped
+    <<: *logging
+
+  zookeeper:
+    <<: *logging
+
+  kafka:
+    <<: *logging
+
+  kafka-init:
+    <<: *logging
+
+  redis-stack:
+    <<: *logging
+
+  kafka-ui:
+    <<: *logging
+
+  prometheus:
+    <<: *logging
+
+  grafana:
+    # Grafana builds redirect and asset URLs from this; without it, logging in
+    # through the proxy bounces to the container's own hostname.
+    environment:
+      GF_SERVER_ROOT_URL: https://grafana.${DOMAIN:?set DOMAIN in .env}
+    <<: *logging
+
+  mlflow-postgres:
+    <<: *logging
+
+  minio:
+    <<: *logging
+
+  minio-init:
+    <<: *logging
+
+  mlflow:
+    <<: *logging
+
+  fraud-consumer:
+    <<: *logging
+
+  fraud-api:
+    <<: *logging
+
+  fraud-producer:
+    <<: *logging
+
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import redis
+import mlflow.artifacts
 import mlflow.xgboost
 from kafka import KafkaConsumer, KafkaProducer
 from kafka.errors import KafkaConnectionError
@@ -45,7 +46,12 @@ log = logging.getLogger(__name__)
 
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-ARTIFACT_DIR = Path(os.getenv("ARTIFACT_DIR", "artifacts"))
+# Download target for the contract, not a source of truth. The encoders are
+# pulled from the MLflow run that produced the model, so they can never be stale
+# relative to it -- a mismatched cat_maps.json produces no warning anywhere, it
+# just encodes categories to the wrong integers.
+CONTRACT_CACHE_DIR = Path(os.getenv("CONTRACT_CACHE_DIR", "artifacts"))
+CONTRACT_ARTIFACT_PATH = "preprocessing"
 
 KAFKA_BROKER = os.getenv("KAFKA_BROKER", "localhost:9092")
 TOPIC = os.getenv("KAFKA_TOPIC", "transactions")
@@ -54,6 +60,7 @@ DLQ_TOPIC = os.getenv("DLQ_TOPIC", "transactions-dlq")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
 REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "3600"))   # predictions live 1h
 FLAGGED_ZSET_MAX = int(os.getenv("FLAGGED_ZSET_MAX", "10000"))    # cap the leaderboard
 
@@ -141,7 +148,19 @@ def install_signal_handlers():
 
 # ─── PREPROCESSING CONTRACT ──────────────────────────────────────────────────
 
-def load_preprocessing_artifacts():
+def fetch_contract(run_id: str) -> Path:
+    """Download the run's preprocessing/ artifacts and return the local path."""
+    CONTRACT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    local = mlflow.artifacts.download_artifacts(
+        run_id=run_id,
+        artifact_path=CONTRACT_ARTIFACT_PATH,
+        dst_path=str(CONTRACT_CACHE_DIR),
+    )
+    log.info(f"Contract from run {run_id} -> {local}")
+    return Path(local)
+
+
+def load_preprocessing_artifacts(contract_dir: Path):
     """
     Load the encoders and sentinel policy persisted at training time.
 
@@ -149,10 +168,10 @@ def load_preprocessing_artifacts():
     used to be duplicated as module constants in this file, so changing the
     training policy would have silently broken serving.
     """
-    cat_maps = json.loads((ARTIFACT_DIR / "cat_maps.json").read_text())
-    feature_columns = json.loads((ARTIFACT_DIR / "feature_columns.json").read_text())
+    cat_maps = json.loads((contract_dir / "cat_maps.json").read_text())
+    feature_columns = json.loads((contract_dir / "feature_columns.json").read_text())
 
-    cfg_path = ARTIFACT_DIR / "encoding_config.json"
+    cfg_path = contract_dir / "encoding_config.json"
     if cfg_path.exists():
         cfg = json.loads(cfg_path.read_text())
     else:
@@ -174,12 +193,12 @@ def load_preprocessing_artifacts():
     return cat_maps, feature_columns, policy
 
 
-def load_threshold_config():
+def load_threshold_config(contract_dir: Path):
     """
     Read the decision thresholds from a versioned artifact if training produced
     one, otherwise fall back to env vars and then to the measured defaults.
     """
-    path = ARTIFACT_DIR / "threshold_config.json"
+    path = contract_dir / "threshold_config.json"
     if path.exists():
         cfg = json.loads(path.read_text())
         fraud = float(cfg["fraud_threshold"])
@@ -300,6 +319,8 @@ def build_feature_frame(rows: list, feature_columns: list) -> pd.DataFrame:
 def load_model():
     """
     Load the registered XGBoost model from the MLflow Model Registry.
+    Returns the model and the run that produced it, so the caller can fetch the
+    matching preprocessing contract.
 
     Resolution order: explicit MODEL_VERSION -> alias -> highest version number.
 
@@ -338,9 +359,10 @@ def load_model():
             )
 
     model = mlflow.xgboost.load_model(uri)
+    run_id = client.get_model_version(MODEL_NAME, str(resolved)).run_id
     MODEL_INFO.labels(model_name=MODEL_NAME, version=str(resolved)).set(1)
-    log.info(f"Loaded model: {MODEL_NAME} v{resolved}")
-    return model
+    log.info(f"Loaded model: {MODEL_NAME} v{resolved} (run {run_id})")
+    return model, run_id
 
 
 def get_feature_columns(model) -> list:
@@ -370,6 +392,7 @@ def create_redis_client() -> redis.Redis:
     client = redis.Redis(
         host=REDIS_HOST,
         port=REDIS_PORT,
+        password=REDIS_PASSWORD,
         decode_responses=True,
         socket_connect_timeout=5,
         socket_keepalive=True,
@@ -502,7 +525,7 @@ def run_consumer():
     install_signal_handlers()
 
     log.info("Loading fraud model from MLflow...")
-    model = load_model()
+    model, run_id = load_model()
 
     # Metrics are secondary to scoring. A busy port used to abort startup with
     # OSError before a single transaction was processed -- which is easy to hit,
@@ -516,8 +539,9 @@ def run_consumer():
             f"Continuing WITHOUT metrics — set METRICS_PORT to a free port."
         )
 
-    cat_maps, feature_columns, policy = load_preprocessing_artifacts()
-    fraud_threshold, high_risk_threshold = load_threshold_config()
+    contract_dir = fetch_contract(run_id)
+    cat_maps, feature_columns, policy = load_preprocessing_artifacts(contract_dir)
+    fraud_threshold, high_risk_threshold = load_threshold_config(contract_dir)
 
     # Sanity check the artifact feature list against the model's own.
     # XGBoost is positional, so a mismatch means silently wrong scores.

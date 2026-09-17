@@ -196,7 +196,7 @@ def test_feature_order_matches_model_if_available(contract):
     """
     cat_maps, feature_columns, policy = contract
     try:
-        model = consumer.load_model()
+        model, _run_id = consumer.load_model()
     except Exception as e:
         pytest.skip(f"registry unreachable: {type(e).__name__}")
 

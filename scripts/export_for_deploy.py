@@ -21,19 +21,21 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import mlflow                                    # noqa: E402
+import mlflow.artifacts                           # noqa: E402
 import mlflow.xgboost                            # noqa: E402
 
 TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
 MODEL_NAME = os.getenv("MODEL_NAME", "fraud-xgboost")
-ARTIFACT_DIR = ROOT / os.getenv("ARTIFACT_DIR", "artifacts")
 BUNDLE = ROOT / "deploy_bundle"
 
+CONTRACT_ARTIFACT_PATH = "preprocessing"
 CONTRACT_FILES = [
     "cat_maps.json",
     "feature_columns.json",
@@ -76,24 +78,39 @@ def main():
     model.get_booster().save_model(str(model_path))
     print(f"  model     -> {model_path} ({model_path.stat().st_size/1024/1024:.1f} MB)")
 
-    for name in CONTRACT_FILES:
-        src = ARTIFACT_DIR / name
-        if not src.exists():
-            if name == "threshold_config.json":
-                sys.exit(
-                    f"{src} missing. Run scripts/select_threshold.py, or retrain "
-                    f"(training now writes it automatically)."
-                )
-            sys.exit(f"Required contract file missing: {src}")
-        shutil.copy2(src, BUNDLE / name)
-        print(f"  contract  -> {BUNDLE / name}")
+    run_id = client.get_model_version(MODEL_NAME, str(version)).run_id
+
+    # The contract comes from the model's own run, not from the local artifacts/
+    # directory. Copying whatever happened to be on disk paired a registry-pinned
+    # model with encoders from some other training run, and nothing downstream
+    # can detect that: consumer.py cross-checks feature ORDER against the model,
+    # but a wrong cat_maps.json just encodes categories to different integers.
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            src_dir = Path(mlflow.artifacts.download_artifacts(
+                run_id=run_id, artifact_path=CONTRACT_ARTIFACT_PATH, dst_path=tmp
+            ))
+        except Exception as e:
+            sys.exit(
+                f"Run {run_id} has no '{CONTRACT_ARTIFACT_PATH}/' artifacts ({e}).\n"
+                f"Retrain: train_fraud_model.py logs the contract with every model."
+            )
+        for name in CONTRACT_FILES:
+            src = src_dir / name
+            if not src.exists():
+                if name == "threshold_config.json":
+                    sys.exit(
+                        f"{name} missing from run {run_id}. Run "
+                        f"scripts/select_threshold.py, or retrain."
+                    )
+                sys.exit(f"Required contract file missing from run {run_id}: {name}")
+            shutil.copy2(src, BUNDLE / name)
+            print(f"  contract  -> {BUNDLE / name}")
 
     # Pull the run's metrics so the dashboard can show real, traceable numbers
     # rather than figures typed into the frontend by hand.
-    run_metrics, run_params, run_id = {}, {}, None
+    run_metrics, run_params = {}, {}
     try:
-        mv = client.get_model_version(MODEL_NAME, str(version))
-        run_id = mv.run_id
         run = client.get_run(run_id)
         run_metrics = {k: float(v) for k, v in run.data.metrics.items()}
         run_params = dict(run.data.params)

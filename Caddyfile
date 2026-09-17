@@ -1,0 +1,26 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# Read API. Every endpoint except /health and /metrics already requires
+# X-API-Key, so the proxy adds transport security, not authentication.
+api.{$DOMAIN} {
+	encode zstd gzip
+
+	# Route-level traffic volumes, exposed unauthenticated. Prometheus is
+	# unaffected: it scrapes fraud-api:8000 over the compose network.
+	handle /metrics {
+		respond 404
+	}
+
+	handle {
+		reverse_proxy fraud-api:8000
+	}
+}
+
+# Grafana, behind its own login. Delete this block to keep dashboards private
+# and reach them over the SSH tunnel instead.
+grafana.{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy grafana:3000
+}

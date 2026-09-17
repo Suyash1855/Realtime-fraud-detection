@@ -4,12 +4,17 @@
 Real-time credit-card fraud detection on the IEEE-CIS dataset. Kafka streams transactions → consumer scores them with an XGBoost model pulled from the MLflow Model Registry → results land in Redis → FastAPI serves them. Prometheus scrapes the consumer and the API.
 
 ## Commands
-- **Infra:** `docker compose up -d` (zookeeper 2181, kafka 9092, redis 6379, redis-insight 8001, kafka-ui 8080)
-- **MLflow server:** `mlflow server --host 0.0.0.0 --port 5001` (**must be 5001**, not the default 5000 — the code hardcodes it)
-- **Train + register:** `python train_fraud_model.py`
-- **Stream:** `python producer.py --rate 100 --limit 5000`
-- **Score:** `python consumer.py` (Prometheus on 8002)
-- **API:** `uvicorn API.main:app --reload --port 8000` → `/stats`, `/frauds`, `/transaction/{tx_id}`, `/metrics`
+Secrets come from `.env`, which is gitignored. `cp .env.example .env` and fill it in first — compose fails to start rather than falling back to defaults.
+
+- **Whole stack:** `docker compose up -d` — zookeeper, kafka, redis, kafka-ui, prometheus, grafana, postgres, minio, mlflow, `fraud-consumer`, `fraud-api`. Every port binds to `${BIND_ADDRESS}` (default `127.0.0.1`) except the API on 8200.
+- **Scale the scorer:** `docker compose up -d --scale fraud-consumer=6` (6 topic partitions is the ceiling)
+- **Replay the dataset:** `docker compose --profile load run --rm fraud-producer` (needs `data/`, mounted read-only)
+- **MLflow:** http://localhost:5001 — Postgres backend, MinIO artifacts. Do **not** start a second `mlflow server` by hand; it would shadow this one with an empty file store.
+- **Train + register:** `MLFLOW_TRACKING_URI=http://localhost:5001 python train_fraud_model.py`
+- **API:** http://localhost:8200. Every endpoint except `/health` and `/metrics` needs `X-API-Key: $API_KEY`.
+  - `POST /transactions`, `POST /transactions/batch` — ingest onto the topic
+  - `GET /stats`, `/frauds`, `/transaction/{tx_id}`, `/health`, `/metrics`
+- **Run locally without compose:** set `KAFKA_BROKER`, `REDIS_HOST`, `REDIS_PASSWORD`, `MLFLOW_TRACKING_URI`, `API_KEY`, then `python consumer.py` / `uvicorn API.main:app --port 8000`.
 
 ## Autonomy / Permissions (IMPORTANT)
 - **Do not ask for permission or confirmation to run the work.** Run the training, the producer/consumer, `docker compose`, `redis-cli`, `curl`, `grep`/`sed`/`awk`/`python3` one-liners, file edits, and installs the task needs and finish the job in one pass.
@@ -26,9 +31,9 @@ Break these and the model scores silently wrong — no error, just bad predictio
 
 1. **`engineer_features()` must stay identical in `consumer.py` and `train_fraud_model.py`.** Both derive `hour`, `day_of_week`, `is_night`, `log_amount`, `amount_rounded`, `addr_mismatch`, `risky_email`. Change one, change the other, then retrain.
 2. **Encoding sentinels are fixed:** `UNKNOWN_CATEGORY = -1`, `MISSING_NUMERIC = -999`, `NULL_CATEGORY_STR = "nan"` (training does `astype(str)`, so NaN becomes the literal string `"nan"`).
-3. **XGBoost is positional.** `artifacts/feature_columns.json` order is authoritative; `consumer.py` cross-checks it against `model.feature_names_in_` and prefers the model's order on mismatch. Retraining means re-copying the artifacts.
+3. **XGBoost is positional.** `consumer.py` downloads `preprocessing/` from the MLflow run that produced the model, so the contract can never be stale relative to it. It cross-checks `feature_columns.json` against `model.feature_names_in_` and prefers the model's order on mismatch. Nothing cross-checks `cat_maps.json` — a wrong one just encodes categories to different integers, silently. Never point serving at a hand-copied `artifacts/` directory.
 4. **Dropped at inference:** `TransactionID`, `TransactionDT`, `isFraud`, `ingested_at`. `isFraud` is carried as `true_label` for offline eval only — never as a feature.
-5. Thresholds: `FRAUD_THRESHOLD = 0.5`, `HIGH_RISK_THRESHOLD = 0.8`. Redis predictions expire after `REDIS_TTL_SECONDS = 3600`.
+5. Thresholds come from `threshold_config.json` in the model's run (currently 0.7933 / 0.9173), falling back to env then to the measured defaults in `consumer.py`. 0.5 is **not** a sane default — `scale_pos_weight` ≈ 27.5 inflates the probabilities. Redis predictions expire after `REDIS_TTL_SECONDS = 3600`.
 6. `data/` holds the raw IEEE-CIS CSVs — read them, never rewrite them.
 
 ## Layout
@@ -37,9 +42,14 @@ Break these and the model scores silently wrong — no error, just bad predictio
 | Training (4 runs: logistic baseline, XGBoost main, XGBoost+SMOTE, IsolationForest) | `train_fraud_model.py` |
 | Stream producer, keyed by `TransactionID` | `producer.py` |
 | Scorer, consumer group `fraud-scorer` | `consumer.py` |
-| Read API | `API/main.py` |
-| Infra | `docker-compose.yml` |
-| Persisted encoders | `artifacts/{cat_maps,feature_columns,encoding_config}.json` |
+| Ingest + read API | `API/main.py` |
+| Infra | `docker-compose.yml`, `.env` (from `.env.example`) |
+| Pipeline image (producer/consumer/API) | `Dockerfile.pipeline` |
+| MLflow image (adds psycopg2 + boto3) | `Dockerfile.mlflow` |
+| Demo console image | `Dockerfile` + `app/` + `deploy_bundle/` |
+| Serving contract | MLflow run artifacts under `preprocessing/`; `artifacts/` is local scratch |
+| Store migration (file store → Postgres/MinIO) | `scripts/migrate_mlflow_store.py` |
+| CI | `.github/workflows/ci.yml` |
 
 ## Conventions
 - Plain scripts, no package layout. Module-level constants in caps at the top of each file; no config framework.
@@ -55,6 +65,10 @@ Break these and the model scores silently wrong — no error, just bad predictio
 - Do not leave behind notes about the current task, PR, or removed code (e.g. `// added for X`, `// previously did Y`) — that context belongs in commit messages.
 
 ## Known Rough Edges
-- `API/main.py` calls `json.loads` in `get_transaction()` without importing `json` — that endpoint raises until the import is added.
-- `MODEL_STAGE = "Production"` in `consumer.py` falls back to `models:/fraud-xgboost/latest` when nothing is promoted; that's the normal dev path.
-- `datetime.utcnow()` is deprecated on modern Python; used in both `producer.py` and `consumer.py`.
+- **Single-broker Kafka, replication factor 1, Zookeeper mode.** No redundancy; losing the broker loses undelivered messages. Real HA means managed Kafka, not more config here.
+- **Kafka and Redis speak plaintext with no auth inside the docker network.** The boundary is `BIND_ADDRESS=127.0.0.1`, not authentication — do not set it to `0.0.0.0` on an untrusted network.
+- **Postgres and MinIO volumes are local.** They survive container restarts, not host loss. Rotating `POSTGRES_PASSWORD` after first init needs `ALTER USER` inside the DB; the env var only applies to an empty volume.
+- **Ingestion is not idempotent.** Re-POSTing a `TransactionID` re-scores it, overwrites the Redis key and double-counts `stats:*`.
+- **`TransactionDT` is a dataset-specific integer offset and is required on ingest.** A real gateway sends a wall-clock timestamp; there is no mapping yet.
+- **The API takes ~45s to start when Kafka is unreachable** — kafka-python retries bootstrap and `max_block_ms` does not bound the constructor. Hence `start_period: 75s`.
+- `train_fraud_model.py` and `scripts/export_for_deploy.py` still default to `http://localhost:5001`, which is correct only from the host.

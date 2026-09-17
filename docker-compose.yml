@@ -16,12 +16,17 @@ services:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     ports:
-      - "2181:2181"
+      - "${BIND_ADDRESS:-127.0.0.1}:2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-log:/var/lib/zookeeper/log
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "2181"]
       interval: 10s
       timeout: 5s
       retries: 5
+    mem_limit: 512m
+    restart: unless-stopped
 
   # ── Kafka ──────────────────────────────────────────────────────────────────
   kafka:
@@ -31,7 +36,9 @@ services:
       zookeeper:
         condition: service_healthy
     ports:
-      - "9092:9092"
+      - "${BIND_ADDRESS:-127.0.0.1}:9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -44,7 +51,9 @@ services:
       #   INTERNAL: other containers      -> kafka:29092
       #   EXTERNAL: host processes        -> localhost:9092
       KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      # EXTERNAL must advertise an address the CLIENT can reach. "localhost" is
+      # only correct while every external client runs on this host.
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://${KAFKA_ADVERTISED_HOST:-localhost}:9092
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
 
@@ -65,6 +74,8 @@ services:
       interval: 10s
       timeout: 10s
       retries: 10
+    mem_limit: 1g
+    restart: unless-stopped
 
   # ── Topic creation ─────────────────────────────────────────────────────────
   # Explicit topics with a real partition count, so `python consumer.py` can be
@@ -99,20 +110,27 @@ services:
     image: redis/redis-stack:latest
     container_name: redis-stack
     ports:
-      - "6379:6379"   # Redis
-      - "8001:8001"   # Redis Insight Web UI
+      - "${BIND_ADDRESS:-127.0.0.1}:6379:6379"   # Redis
+      - "${BIND_ADDRESS:-127.0.0.1}:8001:8001"   # Redis Insight Web UI
+    volumes:
+      - redis-data:/data
     environment:
       # volatile-lru, NOT allkeys-lru. Predictions carry a TTL; the
       # flagged_transactions leaderboard and the stats:* counters do not.
       # allkeys-lru was free to evict those unexpiring keys under memory
       # pressure, which would make /stats and /frauds silently wrong.
       # volatile-lru only ever evicts keys that have a TTL set.
-      REDIS_ARGS: "--maxmemory 256mb --maxmemory-policy volatile-lru --appendonly no"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      # appendonly yes: predictions used to live only in memory, so a restart
+      # silently emptied every /stats counter and every stored score.
+      REDIS_ARGS: "--maxmemory 256mb --maxmemory-policy volatile-lru --appendonly yes --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 5
+    mem_limit: 512m
+    restart: unless-stopped
 
   # ── Kafka UI ───────────────────────────────────────────────────────────────
   kafka-ui:
@@ -122,12 +140,17 @@ services:
       kafka:
         condition: service_healthy
     ports:
-      - "8080:8080"
+      - "${BIND_ADDRESS:-127.0.0.1}:8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: local
       # Must use the INTERNAL listener -- this runs inside the docker network.
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
-      DYNAMIC_CONFIG_ENABLED: "true"
+      # Both false on purpose: the UI is unauthenticated, and with dynamic
+      # config on, anyone who reached it could reconfigure the cluster.
+      KAFKA_CLUSTERS_0_READONLY: "true"
+      DYNAMIC_CONFIG_ENABLED: "false"
+    mem_limit: 512m
+    restart: unless-stopped
 
   # ── Prometheus ─────────────────────────────────────────────────────────────
   # The code exposed metrics and a prometheus.yml existed, but no scraper was
@@ -136,17 +159,15 @@ services:
     image: prom/prometheus:latest
     container_name: prometheus
     ports:
-      - "9090:9090"
+      - "${BIND_ADDRESS:-127.0.0.1}:9090:9090"
     volumes:
       - ./API/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-    extra_hosts:
-      # host.docker.internal is native on Docker Desktop; this keeps the scrape
-      # targets working on plain Linux Docker too.
-      - "host.docker.internal:host-gateway"
+    mem_limit: 512m
+    restart: unless-stopped
 
   # ── Grafana ────────────────────────────────────────────────────────────────
   grafana:
@@ -155,17 +176,226 @@ services:
     depends_on:
       - prometheus
     ports:
-      - "3000:3000"
+      - "${BIND_ADDRESS:-127.0.0.1}:3000:3000"
     environment:
-      GF_SECURITY_ADMIN_USER: admin
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
       GF_USERS_ALLOW_SIGN_UP: "false"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Was on with a Viewer role, which made every dashboard public to anyone
+      # who could reach the port.
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
     volumes:
       - grafana-data:/var/lib/grafana
       - ./API/grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # ── MLflow backend store ───────────────────────────────────────────────────
+  # Run metadata, registered versions and aliases. The file store this replaced
+  # has no locking, so a training run writing while the registry was read could
+  # interleave; and the alias that selects the served model lived in a plain
+  # YAML file with no transaction around updates.
+  # Credentials are dev defaults and belong in secrets before this is exposed.
+  mlflow-postgres:
+    image: postgres:16-alpine
+    container_name: mlflow-postgres
+    environment:
+      POSTGRES_USER: mlflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: mlflow
+    volumes:
+      - mlflow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mlflow -d mlflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # ── MLflow artifact store ──────────────────────────────────────────────────
+  # S3-compatible, so moving to real S3/GCS is an endpoint and a credential
+  # rather than a code change. Only the tracking server holds these keys:
+  # --serve-artifacts means clients fetch through MLflow over the
+  # mlflow-artifacts:/ scheme and never talk to object storage directly.
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:9000:9000"
+      - "${BIND_ADDRESS:-127.0.0.1}:9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    mem_limit: 512m
+    restart: unless-stopped
+
+  # ── Bucket creation ────────────────────────────────────────────────────────
+  minio-init:
+    image: quay.io/minio/minio:latest
+    container_name: minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "mc alias set local http://minio:9000 \"$$MINIO_ROOT_USER\" \"$$MINIO_ROOT_PASSWORD\" &&
+       mc mb --ignore-existing local/mlflow &&
+       mc ls local"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    restart: "no"
+
+  # ── MLflow tracking server + model registry ────────────────────────────────
+  # consumer.py resolves models:/fraud-xgboost@champion through this server and
+  # downloads the preprocessing contract from the resolved run, so it is a
+  # runtime dependency of the scorer, not just a training tool.
+  # Published on 5001 to match the URI train_fraud_model.py defaults to.
+  mlflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
+    image: fraud-mlflow:latest
+    container_name: mlflow
+    depends_on:
+      mlflow-postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:5001:5000"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD in .env}
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri postgresql://mlflow:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@mlflow-postgres:5432/mlflow
+      --artifacts-destination s3://mlflow
+      --serve-artifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    mem_limit: 1g
+    restart: unless-stopped
+
+  # ── Scorer ─────────────────────────────────────────────────────────────────
+  # Scale out with: docker compose up -d --scale fraud-consumer=6
+  # (kafka-init gives the topic 6 partitions, which is the ceiling.)
+  fraud-consumer:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: fraud-pipeline:latest
+    command: ["python", "consumer.py"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis-stack:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    environment:
+      # kafka:29092 is the INTERNAL listener. localhost:9092 is advertised to
+      # host processes only and resolves to the container itself in here.
+      KAFKA_BROKER: kafka:29092
+      REDIS_HOST: redis-stack
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      METRICS_PORT: "8002"
+    ports:
+      # A range, not "8002:8002": a fixed host port can only be bound by one
+      # container, so a single mapping caps --scale at 1. Six, to match the
+      # partition count. Prometheus reaches replicas in-network regardless.
+      - "${BIND_ADDRESS:-127.0.0.1}:8002-8007:8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8002/metrics', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    mem_limit: 2g
+    restart: unless-stopped
+
+  # ── Read API ───────────────────────────────────────────────────────────────
+  # Host port 8200, container port 8000: app/main.py (the demo console) owns
+  # 8000 on the host.
+  fraud-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: fraud-pipeline:latest
+    container_name: fraud-api
+    command: ["uvicorn", "API.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      redis-stack:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis-stack
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      KAFKA_BROKER: kafka:29092
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+    # Defaults to every interface for local use. Set API_BIND_ADDRESS=127.0.0.1
+    # in .env wherever Caddy fronts this (docker-compose.prod.yml), so the only
+    # public entrypoint is the proxy and not an untrusted plaintext port.
+    ports:
+      - "${API_BIND_ADDRESS:-0.0.0.0}:8200:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Long, because an unreachable broker makes the Kafka producer retry
+      # bootstrap for ~45s at startup before ingestion is marked unavailable.
+      start_period: 75s
+    mem_limit: 1g
+    restart: unless-stopped
+
+  # ── Stream producer ────────────────────────────────────────────────────────
+  # Behind a profile so `docker compose up -d` brings up the stack without
+  # immediately replaying the dataset. Start a run with:
+  #   docker compose --profile load run --rm fraud-producer
+  # data/ is mounted read-only rather than copied: 1.3 GB of CSV does not belong
+  # in an image, and the raw dataset is never written to.
+  fraud-producer:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    image: fraud-pipeline:latest
+    profiles: ["load"]
+    command: ["python", "producer.py", "--rate", "100", "--limit", "5000"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER: kafka:29092
+    volumes:
+      - ./data:/app/data:ro
+    mem_limit: 2g
+    restart: "no"
+
 
 volumes:
   prometheus-data:
   grafana-data:
+  mlflow-db:
+  minio-data:
+  zookeeper-data:
+  zookeeper-log:
+  kafka-data:
+  redis-data:

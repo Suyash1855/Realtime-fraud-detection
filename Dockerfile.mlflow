@@ -1,0 +1,9 @@
+# ─── MLflow tracking server ──────────────────────────────────────────────────
+# The published image has neither a Postgres driver nor an S3 client, so it can
+# only run the single-writer file store. These two packages are what let the
+# server use a real database and an object store.
+FROM ghcr.io/mlflow/mlflow:v3.1.4
+
+RUN pip install --no-cache-dir \
+      "psycopg2-binary==2.9.10" \
+      "boto3==1.35.99"

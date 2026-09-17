@@ -4,33 +4,30 @@ global:
 
 scrape_configs:
 
-  # FastAPI read API (API/main.py) — prometheus_fastapi_instrumentator
-  # exposes /metrics.
-  #
-  # Port 8200, not 8000: the demo console (app/main.py) owns 8000 and is not part
-  # of the monitored pipeline. 8100 is avoided because another local project
-  # binds it on IPv6, which makes `localhost:8100` ambiguous. Start it with:
-  #   uvicorn API.main:app --port 8200
+  # Fraud read API (API/main.py) — prometheus_fastapi_instrumentator exposes
+  # /metrics. Container port 8000; the 8200 host mapping is not used from here.
   - job_name: "fastapi"
     static_configs:
       - targets:
-          - "host.docker.internal:8200"
+          - "fraud-api:8000"
         labels:
           service: "fraud-api"
 
-  # Kafka consumer / scorer.
-  # consumer.py serves metrics on METRICS_PORT (default 8002). This previously
-  # pointed at 8001 while the code called start_http_server(8002), so Prometheus
-  # collected nothing at all from the scorer.
+  # Kafka consumer / scorer. Must be 8002, not 8001: redis-stack publishes
+  # RedisInsight on 8001, so the consumer cannot bind there at all.
   #
-  # It must be 8002, not 8001: redis-stack publishes RedisInsight on 8001, so the
-  # consumer cannot bind there at all.
+  # DNS discovery rather than a static target: Docker's embedded DNS returns one
+  # A record per replica, so `--scale fraud-consumer=N` is scraped in full. A
+  # static_config would resolve the name once and monitor a single replica.
   - job_name: "fraud-consumer"
-    static_configs:
-      - targets:
-          - "host.docker.internal:8002"
-        labels:
-          service: "fraud-consumer"
+    dns_sd_configs:
+      - names:
+          - "fraud-consumer"
+        type: A
+        port: 8002
+    relabel_configs:
+      - target_label: service
+        replacement: "fraud-consumer"
 
   # Prometheus scraping itself, so the monitoring stack is observable too.
   - job_name: "prometheus"

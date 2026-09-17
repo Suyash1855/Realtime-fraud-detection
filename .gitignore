@@ -7,8 +7,9 @@ mlruns/
 mlartifacts/
 
 # ── Generated model artifacts ────────────────────────────────────────────────
-# These are outputs of train_fraud_model.py. They are the train/serve contract,
-# so if you deploy from git rather than from the registry, un-ignore them.
+# Local scratch copies of the train/serve contract. Nothing deploys from here:
+# consumer.py and scripts/export_for_deploy.py both download it from the MLflow
+# run that produced the model, so the tracked copy is deploy_bundle/.
 artifacts/*.json
 
 # ── Plots / reports ──────────────────────────────────────────────────────────

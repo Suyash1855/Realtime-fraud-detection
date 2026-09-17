@@ -23,6 +23,8 @@ exposes them. Prometheus and Grafana watch the whole thing.
 
 > **Just want to run it?** See **[RUNBOOK.md](RUNBOOK.md)** for
 > step-by-step start instructions, a port map, and troubleshooting.
+>
+> **Putting the full pipeline on a server?** See **[DEPLOY.md](DEPLOY.md)**.
 
 ---
 
