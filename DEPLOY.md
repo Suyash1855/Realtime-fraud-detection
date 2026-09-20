@@ -6,8 +6,8 @@ front. `RUNBOOK.md` is the local equivalent; this is the same compose file plus
 `docker-compose.prod.yml`.
 
 The demo console is **not** part of this. It stays on Fly.io (`fly.toml`,
-root `Dockerfile`) — it is self-contained and needs none of the infrastructure
-below.
+root `Dockerfile`, commands in `DEPLOY_DEMO_CONSOLE.md`) — it is self-contained and
+needs none of the infrastructure below.
 
 **What ends up public:** `https://api.<domain>` (read + ingest API, API-key
 protected) and `https://grafana.<domain>` (Grafana's own login). Everything else

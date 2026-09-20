@@ -25,6 +25,7 @@ exposes them. Prometheus and Grafana watch the whole thing.
 > step-by-step start instructions, a port map, and troubleshooting.
 >
 > **Putting the full pipeline on a server?** See **[DEPLOY.md](DEPLOY.md)**.
+> **Deploying or updating the demo console?** See **[DEPLOY_DEMO_CONSOLE.md](DEPLOY_DEMO_CONSOLE.md)**.
 
 ---
 

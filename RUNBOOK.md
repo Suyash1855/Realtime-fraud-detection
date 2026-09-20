@@ -12,7 +12,8 @@ There are two ways to run this project. Pick based on what you want:
 | Commands | 1 | ~6 across 4 terminals |
 | Use when | Showing someone the project | Proving the streaming architecture |
 
-Both are local. To run the full pipeline on a server, see **[DEPLOY.md](DEPLOY.md)**.
+Both are local. To deploy: **[DEPLOY_DEMO_CONSOLE.md](DEPLOY_DEMO_CONSOLE.md)** for the demo
+console on Fly, **[DEPLOY.md](DEPLOY.md)** for the full pipeline on a server.
 
 ---
 
