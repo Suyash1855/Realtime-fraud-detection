@@ -7,8 +7,8 @@
 #   fly launch --no-deploy      # first time, to claim an app name
 #   fly deploy
 
-app = "fraud-detect-console"
-primary_region = "iad"
+app = "real-time-fraud-detect-console"
+primary_region = "sin"
 
 [build]
   dockerfile = "Dockerfile"
