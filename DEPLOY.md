@@ -103,6 +103,8 @@ cp /root/.ssh/authorized_keys /home/deploy/.ssh/
 chown -R deploy:deploy /home/deploy/.ssh
 chmod 700 /home/deploy/.ssh && chmod 600 /home/deploy/.ssh/authorized_keys
 usermod -aG sudo deploy
+# Used only by sudo -- SSH stays key-only below. Without it sudo has nothing to check.
+passwd deploy
 
 # Swap — 16 GB is enough for steady state, not for a JVM heap spike during a
 # full-rate replay while the consumer is also loading the model.
@@ -114,10 +116,12 @@ apt update && apt install -y unattended-upgrades
 printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
   > /etc/apt/apt.conf.d/20auto-upgrades
 
-# Keys only
-sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-systemctl restart ssh
+# Keys only. A drop-in rather than editing sshd_config: sshd takes the first value
+# it reads, and cloud-init's 50-cloud-init.conf would otherwise win.
+printf 'PasswordAuthentication no\nPermitRootLogin prohibit-password\n' \
+  > /etc/ssh/sshd_config.d/00-hardening.conf
+sshd -t && systemctl restart ssh
+sshd -T | grep -E '^(passwordauthentication|permitrootlogin) '
 ```
 
 Open a **second terminal** and confirm `ssh deploy@<server-ip>` works before
@@ -381,6 +385,70 @@ ssh -N -L 5555:127.0.0.1:5001 \
 | http://localhost:9001 | MinIO console |
 
 kafka-ui has no authentication at all. Do not put it behind Caddy.
+
+---
+
+## Step 12b — Trace the chain
+
+`/stats` returning non-zero proves all six components at once. When it returns
+zeros, check each link in turn.
+
+### Producer → Kafka
+
+kafka-ui at `localhost:8080` → Topics → `transactions` shows a count per
+partition and the messages themselves. Or:
+
+```bash
+docker exec kafka kafka-run-class kafka.tools.GetOffsetShell \
+  --bootstrap-server kafka:29092 --topic transactions
+```
+
+Per-partition write counts. Run it twice while the producer runs; climbing
+numbers mean Kafka is receiving.
+
+### Kafka → consumer
+
+The most informative check in the system:
+
+```bash
+docker exec kafka kafka-consumer-groups --bootstrap-server kafka:29092 \
+  --describe --group fraud-scorer
+```
+
+| Reading | Meaning |
+|---|---|
+| LAG ~0, offsets climbing | keeping up |
+| LAG climbing | alive but too slow — `--scale fraud-consumer=N` |
+| offsets frozen | stuck or dead |
+| "no active members" | not running |
+
+### Consumer → Redis
+
+RedisInsight at `localhost:8001`, or:
+
+```bash
+R='redis-cli --no-auth-warning -a "$REDIS_PASSWORD"'
+docker exec redis-stack sh -c "$R DBSIZE"
+docker exec redis-stack sh -c "$R MGET stats:total_scored stats:total_fraud stats:high_risk"
+docker exec redis-stack sh -c "$R ZREVRANGE flagged_transactions 0 4 WITHSCORES"
+docker exec redis-stack sh -c "$R GET prediction:<TransactionID>"
+```
+
+`prediction:*` keys expire after an hour; `flagged_transactions` and `stats:*`
+never do. An empty DBSIZE with a healthy consumer group means scoring is failing
+— check `logs fraud-consumer`.
+
+### Watch it run
+
+```bash
+# terminal 1
+docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+  --profile load run --rm fraud-producer
+
+# terminal 2
+watch -n 2 'docker exec kafka kafka-consumer-groups \
+  --bootstrap-server kafka:29092 --describe --group fraud-scorer'
+```
 
 ---
 

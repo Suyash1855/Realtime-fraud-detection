@@ -257,7 +257,7 @@ curl -s --get http://localhost:9090/api/v1/query \
 curl -s http://localhost:8080/api/clusters | python3 -m json.tool
 
 # Redis eviction policy must be volatile-lru, not allkeys-lru
-docker exec redis-stack redis-cli CONFIG GET maxmemory-policy
+docker exec redis-stack sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" CONFIG GET maxmemory-policy'
 
 # Train/serve parity — the regression guard for the whole contract
 python3 -m pytest tests/ -v
@@ -356,7 +356,7 @@ Kafka needs both listeners. `KAFKA_ADVERTISED_LISTENERS` must include
 
 **`/stats` numbers look far too high**
 `auto_offset_reset="earliest"` means a new consumer group re-reads the whole
-topic, double-counting. Reset with `docker exec redis-stack redis-cli FLUSHDB`.
+topic, double-counting. Reset with `docker exec redis-stack sh -c 'redis-cli --no-auth-warning -a "$REDIS_PASSWORD" FLUSHDB'`.
 
 **Grafana has no dashboards**
 None are provisioned yet. The Prometheus datasource *is* pre-wired, so use
