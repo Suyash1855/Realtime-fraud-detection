@@ -219,7 +219,8 @@ services:
   # --serve-artifacts means clients fetch through MLflow over the
   # mlflow-artifacts:/ scheme and never talk to object storage directly.
   minio:
-    image: quay.io/minio/minio:latest
+    # MinIO no longer publishes images; -dev is the free Chainguard tag with a shell, mc and wget.
+    image: chainguard/minio:latest-dev
     container_name: minio
     command: server /data --console-address ":9001"
     environment:
@@ -231,7 +232,7 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -241,7 +242,7 @@ services:
 
   # ── Bucket creation ────────────────────────────────────────────────────────
   minio-init:
-    image: quay.io/minio/minio:latest
+    image: chainguard/minio:latest-dev
     container_name: minio-init
     depends_on:
       minio:
