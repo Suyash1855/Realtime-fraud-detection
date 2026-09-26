@@ -1,0 +1,51 @@
+{
+  "title": "Fraud Engine",
+  "refresh": "5s",
+  "time": {"from": "now-15m", "to": "now"},
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Transactions scored",
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 5},
+      "datasource": {"type": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(transactions_processed_total)"}]
+    },
+    {
+      "type": "stat",
+      "title": "Frauds flagged",
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 5},
+      "datasource": {"type": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(frauds_detected_total)"}]
+    },
+    {
+      "type": "stat",
+      "title": "Scoring failures",
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 5},
+      "datasource": {"type": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(scoring_failures_total)"}]
+    },
+    {
+      "type": "stat",
+      "title": "Ingested via API",
+      "gridPos": {"x": 18, "y": 0, "w": 6, "h": 5},
+      "datasource": {"type": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(transactions_ingested_total)"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Throughput (transactions / second)",
+      "gridPos": {"x": 0, "y": 5, "w": 12, "h": 9},
+      "datasource": {"type": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(rate(transactions_processed_total[1m]))", "legendFormat": "scored/s"}]
+    },
+    {
+      "type": "timeseries",
+      "title": "Scoring latency p95 (ms)",
+      "gridPos": {"x": 12, "y": 5, "w": 12, "h": 9},
+      "datasource": {"type": "prometheus"},
+      "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum(rate(model_latency_milliseconds_bucket[1m])) by (le))", "legendFormat": "p95"}]
+    }
+  ]
+}
