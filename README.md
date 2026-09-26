@@ -26,6 +26,7 @@ exposes them. Prometheus and Grafana watch the whole thing.
 >
 > **Putting the full pipeline on a server?** See **[DEPLOY.md](DEPLOY.md)**.
 > **Deploying or updating the demo console?** See **[DEPLOY_DEMO_CONSOLE.md](DEPLOY_DEMO_CONSOLE.md)**.
+> **How the full pipeline was deployed to Hetzner, and why?** See **[DEPLOYMENT_STORY.md](DEPLOYMENT_STORY.md)** ([PDF](DEPLOYMENT_STORY.pdf)).
 
 ---
 
